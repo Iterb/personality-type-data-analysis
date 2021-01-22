@@ -19,11 +19,15 @@ When you save the notebook, an HTML file containing the code and output will be 
 The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
 
 ```{r}
+Sys.setenv(LANG = "en")
 library(tidyverse) # metapackage of all tidyverse packages
 library(tokenizers)
 library(stopwords)
 library(tm)
 library(text2vec)
+library(fpc)
+library(pdfCluster)
+library(fossil)
 ```
 
 ```{r}
@@ -40,6 +44,9 @@ library(dbscan)
 data = read.csv("mbti_1.csv")
 
 n <- 1000 #sample from data
+labels <- c("ENFJ","ENFP","ENTJ","ENTP","ESFJ","ESFP",
+            "ESTJ","ESTP","INFJ","INFP","INTJ","INTP",
+            "ISFJ","ISFP","ISTJ","ISTP")
 
 data <- data[sample(nrow(data), n), ]
 ```
@@ -75,6 +82,10 @@ data$posts <- gsub('[ ]{2,}', " ", data$posts)
 #word tokenization and stemming
 data$posts <- tokenize_word_stems(data$posts, stopwords = stopwords::stopwords("en"))
 
+#add column with cluster number(used to calculate rand index later on)
+data_stats <- subset(data, select = c(type))
+data_stats$cluster = match(data_stats$type, labels)
+
 ```
 
 ```{r}
@@ -82,7 +93,7 @@ data$posts <- tokenize_word_stems(data$posts, stopwords = stopwords::stopwords("
 iterator = itoken(data$posts)
 vocab = create_vocabulary(iterator)
 pruned_vocab = prune_vocabulary(vocab, 
-                                 term_count_min = 5, 
+                                 term_count_min = 35, 
                                  doc_proportion_max = 0.7,
                                  doc_proportion_min = 0.1)
 pruned_vocab
@@ -171,7 +182,10 @@ vocab2 = create_vocabulary(iterator2)
 pruned_vocab2 = prune_vocabulary(vocab2, 
                                  term_count_min = 5, 
                                  doc_proportion_max = 0.8,
-                                 doc_proportion_min = 0.001)
+                                 doc_proportion_min = 0.01)
+
+data_stats2 <- subset(data2, select = c(type))
+data_stats2$cluster = match(data_stats2$type, labels)
 
 #document term matrix
 vectorizer2 = vocab_vectorizer(pruned_vocab2)
@@ -224,7 +238,14 @@ pam_results_dtm <- data %>%
 mutate(cluster = pam.dtm$clustering) %>%
 group_by(cluster)
 
+
+
 pam_results <- subset(pam_results_dtm, select = c(type, cluster))
+#calculate stats and rand index
+dd <- dist(dtm, method ="euclidean")
+pam_stats <- cluster.stats(d = dd, pam_results$cluster, data_stats$cluster)
+ri <- rand.index(unname(pam_results$cluster), data_stats$cluster)
+
 t <-  table(pam_results)
 print ("Wyniki ilosciowe grupowania dla dtm")
 print (t)
@@ -232,8 +253,12 @@ t2 <- round(t/rowSums(t)*100)
 t2 <- cbind(t2,rowSums(t))
 print ("Wyniki procentowe grupowania dla dtm")
 print (t2)
+
+print("Indeks randa")
+print(ri)
 fviz_cluster(pam.dtm)
 ```
+
 
 ### K-medoids TFIDF
 
@@ -242,7 +267,14 @@ pam_results_tfidf <- data %>%
 mutate(cluster = pam.tfidf$clustering) %>%
 group_by(cluster)
 
+
+
 pam_results <- subset(pam_results_tfidf, select = c(type, cluster))
+#calculate stats and rand index
+dd <- dist(dt_tfidf, method ="euclidean")
+pam_stats <- cluster.stats(d = dd, pam_results$cluster, data_stats$cluster)
+ri <- rand.index(unname(pam_results$cluster), data_stats$cluster)
+
 t <-  table(pam_results)
 print ("Wyniki ilosciowe grupowania dla tf-idf")
 print (t)
@@ -251,8 +283,13 @@ t2 <- cbind(t2,rowSums(t))
 print ("Wyniki procentowe grupowania dla tf-idf")
 print (t2)
 
+print("Indeks randa")
+print(ri)
+
 fviz_cluster(pam.tfidf)
 ```
+
+
 
 ### K-medoids Glove
 
@@ -262,6 +299,12 @@ mutate(cluster = pam.glove$clustering) %>%
 group_by(cluster)
 
 pam_results <- subset(pam_results_glove, select = c(type, cluster))
+
+#calculate stats and rand index
+dd <- dist(sentence_vectors, method ="euclidean")
+pam_stats <- cluster.stats(d = dd, pam_results$cluster, data_stats$cluster)
+ri <- rand.index(unname(pam_results$cluster), data_stats$cluster)
+
 t <-  table(pam_results)
 print ("Wyniki ilosciowe grupowania dla glove1")
 print (t)
@@ -270,8 +313,13 @@ t2 <- cbind(t2,rowSums(t))
 print ("Wyniki procentowe grupowania dla glove1")
 print (t2)
 
+print("Indeks randa")
+print(ri)
+
+
 fviz_cluster(pam.glove)
 ```
+
 
 
 ### K-medoids Glove(oddzielne posty)
@@ -283,6 +331,12 @@ mutate(cluster = pam.glove2$clustering) %>%
 group_by(cluster)
 
 pam_results <- subset(pam_results_glove2, select = c(type, cluster))
+
+#calculate stats and rand index
+dd <- dist(sentence_vectors2, method ="euclidean")
+pam_stats <- cluster.stats(d = dd, pam_results$cluster, data_stats2$cluster)
+ri <- rand.index(unname(pam_results$cluster), data_stats2$cluster)
+
 t <-  table(pam_results)
 print ("Wyniki ilosciowe grupowania dla glove2")
 print (t)
@@ -291,7 +345,18 @@ t2 <- cbind(t2,rowSums(t))
 print ("Wyniki procentowe grupowania dla glove2")
 print (t2)
 
+print("Indeks randa")
+print(ri)
+
+
 fviz_cluster(pam.glove2)
+```
+```{r}
+
+#dd <- dist(word_vectors, method ="euclidean")
+#pam_stats <- cluster.stats(d = dd, pam_results$cluster, data_stats$cluster)
+ri <- rand.index(unname(pam_results$cluster), data_stats$cluster)
+ri
 ```
 
 ## DBSCAN
