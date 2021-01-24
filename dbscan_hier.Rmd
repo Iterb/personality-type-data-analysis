@@ -1,0 +1,793 @@
+---
+title: "rafiki"
+author: "rafiki"
+date: "23 01 2021"
+output: html_document
+---
+
+```{r}
+library(tidyverse) # metapackage of all tidyverse packages
+library(tokenizers)
+library(stopwords)
+library(tm)
+library(text2vec)
+library(fpc)
+library(pdfCluster)
+library(fossil)
+```
+
+```{r}
+library(NbClust)
+library(cluster)
+library(factoextra)
+library(dbscan)
+```
+
+# Wczytanie i przetworzenie danych
+
+
+```{r}
+data = read.csv("mbti_1.csv")
+n <- 2000 #sample from data
+labels <- c("ENFJ","ENFP","ENTJ","ENTP","ESFJ","ESFP",
+            "ESTJ","ESTP","INFJ","INFP","INTJ","INTP",
+            "ISFJ","ISFP","ISTJ","ISTP")
+
+data <- data[sample(nrow(data), n), ]
+```
+```{r}
+data[1,][2] 
+```
+```{r}
+INTJ <- data[data$type=="INTJ",]
+INTP <- data[data$type=="INTP",]
+ENTJ <- data[data$type=="ENTJ",]
+ENTP <- data[data$type=="ENTP",]
+INFJ <- data[data$type=="INFJ",]
+INFP <- data[data$type=="INFP",]
+ENFJ <- data[data$type=="ENFJ",]
+ENFP <- data[data$type=="ENFP",]
+ISTJ <- data[data$type=="ISTJ",]
+ISFJ <- data[data$type=="ISFJ",]
+ESTJ <- data[data$type=="ESTJ",]
+ESFJ <- data[data$type=="ESFJ",]
+ISTP <- data[data$type=="ISTP",]
+ISFP <- data[data$type=="ISFP",]
+ESTP <- data[data$type=="ESTP",]
+ESFP <- data[data$type=="ESFP",]
+
+```
+
+```{r}
+#replaces URLs with word "link"
+data$posts <- gsub('http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', 'link', data$posts)
+
+#removes all noise from text
+data$posts <- gsub('[^a-zA-Z]', " ", data$posts)
+
+#removes more than 1 space
+data$posts <- gsub('[ ]{2,}', " ", data$posts)
+
+#word tokenization and stemming
+data$posts <- tokenize_word_stems(data$posts, stopwords = stopwords::stopwords("en"))
+
+#add column with cluster number(used to calculate rand index later on)
+data_stats <- subset(data, select = c(type))
+data_stats$cluster = match(data_stats$type, labels)
+
+```
+
+```{r}
+#create dictionary
+iterator = itoken(data$posts)
+vocab = create_vocabulary(iterator)
+pruned_vocab = prune_vocabulary(vocab, 
+                                 term_count_min = 35, 
+                                 doc_proportion_max = 0.7,
+                                 doc_proportion_min = 0.1)
+pruned_vocab
+```
+
+## Wektoryzacja
+
+```{r}
+#document term matrix
+vectorizer = vocab_vectorizer(pruned_vocab)
+dtm = create_dtm(iterator, vectorizer)
+
+#(Term Co-occurrence Matrix)
+tcm = create_tcm(iterator, vectorizer, skip_grams_window = 5L)
+
+#tf_idf
+tf_idf = TfIdf$new()
+# fit tf-idf to training data
+dt_tfidf = fit_transform(dtm, tf_idf)
+
+# apply pre-trained tf-idf transformation to testing data
+#doc_term_test_tfidf  = transform(doc_term_test, tf_idf)
+
+vectors.dtm <- dtm
+vectors.tfidf <- dt_tfidf
+dim(dtm)
+```
+
+```{r}
+glove = GlobalVectors$new(rank = 50, x_max = 10)
+wv_main = glove$fit_transform(tcm, n_iter = 100, convergence_tol = 0.01, n_threads = 8)
+
+
+wv_context = glove$components
+word_vectors = wv_main + t(wv_context)
+
+common_terms = intersect(colnames(dtm), rownames(word_vectors) )
+dtm_averaged =  normalize(dtm[, common_terms], "l1")
+sentence_vectors = dtm_averaged %*% word_vectors[common_terms, ]
+vectors.glove <- sentence_vectors
+```
+
+
+```{r}
+#split rows into single post not 50 
+library(tidyr)
+library(dplyr)
+
+data2 = read.csv("mbti_1.csv")
+data2 <- data2[sample(nrow(data2), 50), ]# do 200 jakoś idzie
+
+#replaces URLs with word "link"
+data2$posts <- gsub('http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', 'link', data2$posts)
+
+data2 <-data2 %>% 
+    mutate(posts = strsplit(as.character(posts), "\\|\\|\\|")) %>% 
+    unnest(posts)
+
+data2$posts <- gsub('[^a-zA-Z]', " ", data2$posts)
+
+#removes more than 1 space
+data2$posts <- gsub('[ ]{2,}', " ", data2$posts)
+
+data2<-subset(data2, sapply(strsplit(posts, " "), length) >=8)
+
+#word tokenization and stemming
+data2$posts <- tokenize_word_stems(data2$posts, stopwords = stopwords::stopwords("en"))
+
+#create dictionary
+iterator2 = itoken(data2$posts)
+vocab2 = create_vocabulary(iterator2)
+
+pruned_vocab2 = prune_vocabulary(vocab2, 
+                                 term_count_min = 5, 
+                                 doc_proportion_max = 0.8,
+                                 doc_proportion_min = 0.01)
+
+data_stats2 <- subset(data2, select = c(type))
+data_stats2$cluster = match(data_stats2$type, labels)
+
+#document term matrix
+vectorizer2 = vocab_vectorizer(pruned_vocab2)
+dtm2 = create_dtm(iterator2, vectorizer2)
+#(Term Co-occurrence Matrix)
+tcm2 = create_tcm(iterator2, vectorizer2, skip_grams_window = 5L)
+
+
+
+glove2 = GlobalVectors$new(rank = 50, x_max = 10)
+wv_main2 = glove2$fit_transform(tcm2, n_iter = 100, convergence_tol = 0.01, n_threads = 8)
+
+
+wv_context2 = glove2$components
+word_vectors2 = wv_main2 + t(wv_context2)
+
+
+common_terms = intersect(colnames(dtm2), rownames(word_vectors2) )
+dtm_averaged =  normalize(dtm2[, common_terms], "l1")
+sentence_vectors2 = dtm_averaged %*% word_vectors2[common_terms, ]
+vectors.glove_post <- sentence_vectors2
+```
+
+
+# Grupowanie
+
+```{r}
+# metric = "euclidean", "manhattan", "gower"
+manhattan.dtm <- daisy(as.matrix(vectors.dtm), metric = "manhattan")
+manhattan.tfidf <- daisy(as.matrix(vectors.tfidf), metric = "manhattan")
+manhattan.glove <- daisy(as.matrix(vectors.glove), metric = "manhattan")
+manhattan.glove_post <- daisy(as.matrix(vectors.glove_post), metric = "manhattan")
+```
+
+```{r}
+euclidean.dtm <- daisy(as.matrix(vectors.dtm), metric = "euclidean")
+euclidean.tfidf <- daisy(as.matrix(vectors.tfidf), metric = "euclidean")
+euclidean.glove <- daisy(as.matrix(vectors.glove), metric = "euclidean")
+euclidean.glove_post <- daisy(as.matrix(vectors.glove_post), metric = "euclidean")
+```
+  
+```{r}
+gower.dtm <- daisy(as.matrix(vectors.dtm), metric = "gower")
+gower.tfidf <- daisy(as.matrix(vectors.tfidf), metric = "gower")
+gower.glove <- daisy(as.matrix(vectors.glove), metric = "gower")
+gower.glove_post <- daisy(as.matrix(vectors.glove_post), metric = "gower")
+```
+
+## Grupowanie Hierarchiczne
+
+### DTM
+## complete
+
+```{r}
+# Use hcut() which compute hclust and cut the tree
+# rownames(dissimilarity.tfidf) <- rownames(data$type)
+hc.cut <- hcut(euclidean.dtm, k = 16, hc_method = "complete")
+# Visualize dendrogram
+# fviz_dend(hc.cut, show_labels = FALSE, rect = TRUE)
+# Visualize cluster
+
+```
+```{r}
+fviz_cluster(hc.cut, data = euclidean.dtm,ellipse.type = "convex")
+```
+```{r}
+ran_comp <- data %>%
+mutate(cluster = hc.cut$cluster) %>%
+group_by(cluster)
+
+
+
+pam_results <- subset(ran_comp, select = c(type, cluster))
+#calculate stats and rand index
+rand.index(unname(pam_results$cluster), data_stats$cluster)
+adj.rand.index(pam_results$cluster, data_stats$cluster)
+cluster.stats(euclidean.dtm, pam_results$cluster, alt.clustering=data_stats$cluster)$avg.silwidth
+```
+
+## mcquitty
+
+```{r}
+# Use hcut() which compute hclust and cut the tree
+# rownames(dissimilarity.tfidf) <- rownames(data$type)
+hc.cut <- hcut(euclidean.dtm, k = 16, hc_method = "mcquitty")
+# Visualize dendrogram
+# fviz_dend(hc.cut, show_labels = FALSE, rect = TRUE)
+# Visualize cluster
+
+```
+```{r}
+fviz_cluster(hc.cut, data = euclidean.dtm,ellipse.type = "convex")
+```
+```{r}
+ran_comp <- data %>%
+mutate(cluster = hc.cut$cluster) %>%
+group_by(cluster)
+
+
+
+pam_results <- subset(ran_comp, select = c(type, cluster))
+#calculate stats and rand index
+rand.index(unname(pam_results$cluster), data_stats$cluster)
+adj.rand.index(pam_results$cluster, data_stats$cluster)
+cluster.stats(euclidean.dtm, pam_results$cluster, alt.clustering=data_stats$cluster)$avg.silwidth
+```
+
+## euclidean
+
+```{r}
+# Use hcut() which compute hclust and cut the tree
+# rownames(dissimilarity.tfidf) <- rownames(data$type)
+hc.cut <- hcut(euclidean.dtm, k = 16, hc_method = "ward.D2")
+# Visualize dendrogram
+# fviz_dend(hc.cut, show_labels = FALSE, rect = TRUE)
+# Visualize cluster
+
+```
+```{r}
+fviz_cluster(hc.cut, data = euclidean.dtm,ellipse.type = "convex")
+```
+```{r}
+ran_comp <- data %>%
+mutate(cluster = hc.cut$cluster) %>%
+group_by(cluster)
+
+
+
+pam_results <- subset(ran_comp, select = c(type, cluster))
+#calculate stats and rand index
+rand.index(unname(pam_results$cluster), data_stats$cluster)
+adj.rand.index(pam_results$cluster, data_stats$cluster)
+cluster.stats(euclidean.dtm, pam_results$cluster, alt.clustering=data_stats$cluster)$avg.silwidth
+```
+
+### TfIDF
+
+## complete
+
+```{r}
+# Use hcut() which compute hclust and cut the tree
+# rownames(dissimilarity.tfidf) <- rownames(data$type)
+hc.cut <- hcut(euclidean.tfidf, k = 16, hc_method = "complete")
+# Visualize dendrogram
+# fviz_dend(hc.cut, show_labels = FALSE, rect = TRUE)
+# Visualize cluster
+
+```
+```{r}
+fviz_cluster(hc.cut, data = euclidean.tfidf,ellipse.type = "convex")
+```
+```{r}
+ran_comp <- data %>%
+mutate(cluster = hc.cut$cluster) %>%
+group_by(cluster)
+
+
+
+pam_results <- subset(ran_comp, select = c(type, cluster))
+#calculate stats and rand index
+rand.index(unname(pam_results$cluster), data_stats$cluster)
+adj.rand.index(pam_results$cluster, data_stats$cluster)
+cluster.stats(euclidean.tfidf, pam_results$cluster, alt.clustering=data_stats$cluster)$avg.silwidth
+```
+
+## mcquitty
+
+```{r}
+# Use hcut() which compute hclust and cut the tree
+# rownames(dissimilarity.tfidf) <- rownames(data$type)
+hc.cut <- hcut(euclidean.tfidf, k = 16, hc_method = "mcquitty")
+# Visualize dendrogram
+# fviz_dend(hc.cut, show_labels = FALSE, rect = TRUE)
+# Visualize cluster
+
+```
+```{r}
+fviz_cluster(hc.cut, data = euclidean.tfidf,ellipse.type = "convex")
+```
+```{r}
+ran_comp <- data %>%
+mutate(cluster = hc.cut$cluster) %>%
+group_by(cluster)
+
+
+
+pam_results <- subset(ran_comp, select = c(type, cluster))
+#calculate stats and rand index
+rand.index(unname(pam_results$cluster), data_stats$cluster)
+adj.rand.index(pam_results$cluster, data_stats$cluster)
+cluster.stats(euclidean.tfidf, pam_results$cluster, alt.clustering=data_stats$cluster)$avg.silwidth
+```
+
+## ward.D2
+
+```{r}
+# Use hcut() which compute hclust and cut the tree
+# rownames(dissimilarity.tfidf) <- rownames(data$type)
+hc.cut <- hcut(euclidean.tfidf, k = 16, hc_method = "ward.D2")
+# Visualize dendrogram
+# fviz_dend(hc.cut, show_labels = FALSE, rect = TRUE)
+# Visualize cluster
+
+```
+```{r}
+fviz_cluster(hc.cut, data = euclidean.tfidf,ellipse.type = "convex")
+```
+```{r}
+ran_comp <- data %>%
+mutate(cluster = hc.cut$cluster) %>%
+group_by(cluster)
+
+
+
+pam_results <- subset(ran_comp, select = c(type, cluster))
+#calculate stats and rand index
+rand.index(unname(pam_results$cluster), data_stats$cluster)
+adj.rand.index(pam_results$cluster, data_stats$cluster)
+cluster.stats(euclidean.tfidf, pam_results$cluster, alt.clustering=data_stats$cluster)$avg.silwidth
+```
+
+### GLOVE
+
+
+## complete
+```{r}
+# Use hcut() which compute hclust and cut the tree
+# rownames(dissimilarity.tfidf) <- rownames(data$type)
+hc.cut <- hcut(euclidean.glove, k = 16, hc_method = "complete")
+# Visualize dendrogram
+# fviz_dend(hc.cut, show_labels = FALSE, rect = TRUE)
+# Visualize cluster
+
+```
+```{r}
+fviz_cluster(hc.cut, data = euclidean.glove,ellipse.type = "convex")
+```
+
+```{r}
+hc.cut.res <- data %>%
+mutate(cluster = hc.cut$cluster) %>%
+group_by(cluster)
+
+
+
+hc.cut.g.res <- subset(hc.cut.res, select = c(type, cluster))
+#calculate stats and rand index
+rand.index(unname(hc.cut.g.res$cluster), data_stats$cluster)
+adj.rand.index(hc.cut.g.res$cluster, data_stats$cluster)
+cluster.stats(euclidean.glove, hc.cut.g.res$cluster, alt.clustering=data_stats$cluster)$avg.silwidth
+```
+## mcquitty
+```{r}
+# Use hcut() which compute hclust and cut the tree
+# rownames(dissimilarity.tfidf) <- rownames(data$type)
+hc.cut <- hcut(euclidean.glove, k = 16, hc_method = "mcquitty")
+# Visualize dendrogram
+# fviz_dend(hc.cut, show_labels = FALSE, rect = TRUE)
+# Visualize cluster
+
+```
+```{r}
+fviz_cluster(hc.cut, data = euclidean.glove,ellipse.type = "convex")
+```
+
+```{r}
+hc.cut.res <- data %>%
+mutate(cluster = hc.cut$cluster) %>%
+group_by(cluster)
+
+
+
+hc.cut.g.res <- subset(hc.cut.res, select = c(type, cluster))
+#calculate stats and rand index
+rand.index(unname(hc.cut.g.res$cluster), data_stats$cluster)
+adj.rand.index(hc.cut.g.res$cluster, data_stats$cluster)
+cluster.stats(euclidean.glove, hc.cut.g.res$cluster, alt.clustering=data_stats$cluster)$avg.silwidth
+```
+
+## ward d2
+```{r}
+# Use hcut() which compute hclust and cut the tree
+# rownames(dissimilarity.tfidf) <- rownames(data$type)
+hc.cut <- hcut(euclidean.glove, k = 16, hc_method = "ward.D2")
+# Visualize dendrogram
+# fviz_dend(hc.cut, show_labels = FALSE, rect = TRUE)
+# Visualize cluster
+
+```
+```{r}
+fviz_cluster(hc.cut, data = euclidean.glove,ellipse.type = "convex")
+```
+
+```{r}
+hc.cut.res <- data %>%
+mutate(cluster = hc.cut$cluster) %>%
+group_by(cluster)
+
+
+
+hc.cut.g.res <- subset(hc.cut.res, select = c(type, cluster))
+#calculate stats and rand index
+rand.index(unname(hc.cut.g.res$cluster), data_stats$cluster)
+adj.rand.index(hc.cut.g.res$cluster, data_stats$cluster)
+cluster.stats(euclidean.glove, hc.cut.g.res$cluster, alt.clustering=data_stats$cluster)$avg.silwidth
+```
+
+### GLOVE Posts
+
+## complete
+```{r}
+# Use hcut() which compute hclust and cut the tree
+# rownames(dissimilarity.tfidf) <- rownames(data$type)
+hc.cut <- hcut(euclidean.glove_post, k = 16, hc_method = "complete")
+# Visualize dendrogram
+# fviz_dend(hc.cut, show_labels = FALSE, rect = TRUE)
+# Visualize cluster
+
+```
+```{r}
+fviz_cluster(hc.cut, data = euclidean.glove_post,ellipse.type = "convex")
+```
+
+```{r}
+hc.cut.res <- data2 %>%
+mutate(cluster = hc.cut$cluster) %>%
+group_by(cluster)
+
+
+
+hc.cut.g.res <- subset(hc.cut.res, select = c(type, cluster))
+#calculate stats and rand index
+rand.index(unname(hc.cut.g.res$cluster), data_stats2$cluster)
+adj.rand.index(hc.cut.g.res$cluster, data_stats2$cluster)
+cluster.stats(euclidean.glove_post, hc.cut.g.res$cluster, alt.clustering=data_stats2$cluster)$avg.silwidth
+```
+## mcquitty
+```{r}
+# Use hcut() which compute hclust and cut the tree
+# rownames(dissimilarity.tfidf) <- rownames(data$type)
+hc.cut <- hcut(euclidean.glove_post, k = 16, hc_method = "mcquitty")
+# Visualize dendrogram
+# fviz_dend(hc.cut, show_labels = FALSE, rect = TRUE)
+# Visualize cluster
+
+```
+```{r}
+fviz_cluster(hc.cut, data = euclidean.glove_post,ellipse.type = "convex")
+```
+
+```{r}
+hc.cut.res <- data2 %>%
+mutate(cluster = hc.cut$cluster) %>%
+group_by(cluster)
+
+
+
+hc.cut.g.res <- subset(hc.cut.res, select = c(type, cluster))
+#calculate stats and rand index
+rand.index(unname(hc.cut.g.res$cluster), data_stats2$cluster)
+adj.rand.index(hc.cut.g.res$cluster, data_stats2$cluster)
+cluster.stats(euclidean.glove_post, hc.cut.g.res$cluster, alt.clustering=data_stats2$cluster)$avg.silwidth
+```
+
+## ward d2
+```{r}
+# Use hcut() which compute hclust and cut the tree
+# rownames(dissimilarity.tfidf) <- rownames(data$type)
+hc.cut <- hcut(euclidean.glove_post, k = 16, hc_method = "ward.D2")
+# Visualize dendrogram
+# fviz_dend(hc.cut, show_labels = FALSE, rect = TRUE)
+# Visualize cluster
+
+```
+```{r}
+fviz_cluster(hc.cut, data = euclidean.glove_post,ellipse.type = "convex")
+```
+
+```{r}
+hc.cut.res <- data2 %>%
+mutate(cluster = hc.cut$cluster) %>%
+group_by(cluster)
+
+
+
+hc.cut.g.res <- subset(hc.cut.res, select = c(type, cluster))
+#calculate stats and rand index
+rand.index(unname(hc.cut.g.res$cluster), data_stats2$cluster)
+adj.rand.index(hc.cut.g.res$cluster, data_stats2$cluster)
+cluster.stats(euclidean.glove_post, hc.cut.g.res$cluster, alt.clustering=data_stats2$cluster)$avg.silwidth
+```
+
+
+## DBSCAN
+
+
+
+### DTM
+## euclidean
+Należy odczytać gdzie na wykresie jest tak zwanne kolano, czyli punkt, po którym wykres zaczyna ustawiać się w pionie. Wartość tego punktu zostaje zastosowana jako eps.
+```{r}
+kNNdistplot(euclidean.dtm, k = 10)
+
+```
+
+```{r}
+eps = 30
+dbscan_res <- fpc::dbscan(euclidean.dtm, eps = eps, MinPts = 10, method="dist")
+```
+```{r}
+fviz_cluster(dbscan_res, data = euclidean.dtm)
+```
+```{r}
+hc.cut.res <- data %>%
+mutate(cluster = dbscan_res$cluster) %>%
+group_by(cluster)
+
+
+
+hc.cut.g.res <- subset(hc.cut.res, select = c(type, cluster))
+#calculate stats and rand index
+table(hc.cut.g.res)
+```
+```{r}
+rand.index(unname(hc.cut.g.res$cluster), data_stats$cluster)
+adj.rand.index(hc.cut.g.res$cluster, data_stats$cluster)
+```
+## Manhatan
+```{r}
+kNNdistplot(manhattan.dtm, k = 2)
+
+```
+
+```{r}
+eps = 400
+dbscan_res <- fpc::dbscan(manhattan.dtm, eps = eps, MinPts = 2, method="dist")
+```
+```{r}
+fviz_cluster(dbscan_res, data = manhattan.dtm)
+```
+```{r}
+hc.cut.res <- data %>%
+mutate(cluster = dbscan_res$cluster) %>%
+group_by(cluster)
+
+
+
+hc.cut.g.res <- subset(hc.cut.res, select = c(type, cluster))
+table(hc.cut.g.res)
+```
+```{r}
+rand.index(unname(hc.cut.g.res$cluster), data_stats$cluster)
+adj.rand.index(hc.cut.g.res$cluster, data_stats$cluster)
+```
+### TFID
+## euclidean
+Należy odczytać gdzie na wykresie jest tak zwanne kolano, czyli punkt, po którym wykres zaczyna ustawiać się w pionie. Wartość tego punktu zostaje zastosowana jako eps.
+```{r}
+kNNdistplot(euclidean.tfidf, k = 2)
+
+```
+
+```{r}
+eps = 0.19
+dbscan_res <- fpc::dbscan(euclidean.tfidf, eps = eps, MinPts = 2, method="dist")
+```
+```{r}
+fviz_cluster(dbscan_res, data = euclidean.tfidf)
+```
+```{r}
+hc.cut.res <- data %>%
+mutate(cluster = dbscan_res$cluster) %>%
+group_by(cluster)
+
+
+
+hc.cut.g.res <- subset(hc.cut.res, select = c(type, cluster))
+table(hc.cut.g.res)
+```
+```{r}
+rand.index(unname(hc.cut.g.res$cluster), data_stats$cluster)
+adj.rand.index(hc.cut.g.res$cluster, data_stats$cluster)
+```
+## Manhatan
+```{r}
+kNNdistplot(manhattan.tfidf, k = 2)
+
+```
+
+```{r}
+eps = 2.2
+dbscan_res <- fpc::dbscan(manhattan.tfidf, eps = eps, MinPts = 2, method="dist")
+```
+```{r}
+fviz_cluster(dbscan_res, data = manhattan.tfidf)
+```
+```{r}
+hc.cut.res <- data %>%
+mutate(cluster = dbscan_res$cluster) %>%
+group_by(cluster)
+
+
+
+hc.cut.g.res <- subset(hc.cut.res, select = c(type, cluster))
+table(hc.cut.g.res)
+```
+```{r}
+rand.index(unname(hc.cut.g.res$cluster), data_stats$cluster)
+adj.rand.index(hc.cut.g.res$cluster, data_stats$cluster)
+```
+### GLOVE
+
+## manhattan
+Należy odczytać gdzie na wykresie jest tak zwanne kolano, czyli punkt, po którym wykres zaczyna ustawiać się w pionie. Wartość tego punktu zostaje zastosowana jako eps.
+```{r}
+kNNdistplot(manhattan.glove, k = 2)
+
+```
+
+```{r}
+eps = 3
+dbscan_res <- fpc::dbscan(manhattan.glove, eps = eps, MinPts = 2, method="dist")
+```
+```{r}
+fviz_cluster(dbscan_res, data = manhattan.glove)
+```
+```{r}
+hc.cut.res <- data %>%
+mutate(cluster = dbscan_res$cluster) %>%
+group_by(cluster)
+
+
+
+hc.cut.g.res <- subset(hc.cut.res, select = c(type, cluster))
+table(hc.cut.g.res)
+```
+```{r}
+rand.index(unname(hc.cut.g.res$cluster), data_stats$cluster)
+adj.rand.index(hc.cut.g.res$cluster, data_stats$cluster)
+```
+
+## euclidean
+```{r}
+kNNdistplot(euclidean.glove, k = 2)
+
+```
+
+```{r}
+eps = 0.4
+dbscan_res <- fpc::dbscan(euclidean.glove, eps = eps, MinPts = 2, method="dist")
+```
+```{r}
+fviz_cluster(dbscan_res, data = euclidean.glove)
+```
+```{r}
+hc.cut.res <- data %>%
+mutate(cluster = dbscan_res$cluster) %>%
+group_by(cluster)
+
+
+
+hc.cut.g.res <- subset(hc.cut.res, select = c(type, cluster))
+table(hc.cut.g.res)
+```
+```{r}
+rand.index(unname(hc.cut.g.res$cluster), data_stats$cluster)
+adj.rand.index(hc.cut.g.res$cluster, data_stats$cluster)
+```
+### GLOVE POST
+## manhattan
+
+Należy odczytać gdzie na wykresie jest tak zwanne kolano, czyli punkt, po którym wykres zaczyna ustawiać się w pionie. Wartość tego punktu zostaje zastosowana jako eps.
+```{r}
+kNNdistplot(manhattan.glove_post, k = 2)
+
+```
+
+```{r}
+eps = 8
+dbscan_res <- fpc::dbscan(manhattan.glove_post, eps = eps, MinPts = 2, method="dist")
+```
+```{r}
+fviz_cluster(dbscan_res, data = manhattan.glove_post)
+```
+```{r}
+hc.cut.res <- data2 %>%
+mutate(cluster = dbscan_res$cluster) %>%
+group_by(cluster)
+
+
+
+hc.cut.g.res <- subset(hc.cut.res, select = c(type, cluster))
+table(hc.cut.g.res)
+```
+```{r}
+rand.index(unname(hc.cut.g.res$cluster), data_stats2$cluster)
+adj.rand.index(hc.cut.g.res$cluster, data_stats2$cluster)
+cluster.stats(manhattan.glove_post, hc.cut.g.res$cluster, alt.clustering=data_stats2$cluster)$avg.silwidth
+```
+## Euclidean
+```{r}
+kNNdistplot(euclidean.glove_post, k = 2)
+
+```
+
+```{r}
+eps = 1.5
+dbscan_res <- fpc::dbscan(euclidean.glove_post, eps = eps, MinPts = 2, method="dist")
+```
+```{r}
+fviz_cluster(dbscan_res, data = euclidean.glove_post)
+```
+```{r}
+hc.cut.res <- data2 %>%
+mutate(cluster = dbscan_res$cluster) %>%
+group_by(cluster)
+
+
+
+hc.cut.g.res <- subset(hc.cut.res, select = c(type, cluster))
+#calculate stats and rand index
+table(hc.cut.g.res)
+```
+```{r}
+rand.index(unname(hc.cut.g.res$cluster), data_stats2$cluster)
+adj.rand.index(hc.cut.g.res$cluster, data_stats2$cluster)
+cluster.stats(euclidean.glove_post, hc.cut.g.res$cluster, alt.clustering=data_stats2$cluster)$avg.silwidth
+```
+
